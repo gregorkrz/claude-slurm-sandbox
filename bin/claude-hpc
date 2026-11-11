@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Launch Claude Code sandboxed for the claude-slurm project containing $PWD.
+# Extra arguments are passed through to `claude`.
+set -euo pipefail
+HERE="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
+CLAUDE_BIN="${CLAUDE_BIN:-claude}"
+
+mapfile -t loc < <("$HERE/claude-slurm" locate "$PWD" || true)
+if [[ ${#loc[@]} -lt 3 ]]; then
+  echo "claude-hpc: $PWD is not inside a claude-slurm project." >&2
+  echo "            run: claude-slurm init <dir> --image IMG.sif --partition P" >&2
+  exit 1
+fi
+ROOT="${loc[0]}"; CFG="${loc[1]}"; SOURCES="${loc[2]}"
+
+"$HERE/claude-slurm" preflight "$CFG"
+
+if [[ "$PWD" != "$ROOT" ]]; then
+  echo "claude-hpc: starting at project root $ROOT" >&2
+  cd "$ROOT"
+fi
+
+# Strip cloud/Anthropic credentials from every subprocess Claude starts.
+export CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1
+
+exec "$CLAUDE_BIN" \
+  --settings "$CFG/settings.json" \
+  --setting-sources "$SOURCES" \
+  --strict-mcp-config --mcp-config "$CFG/mcp.json" \
+  --append-system-prompt-file "$CFG/context.md" \
+  "$@"

@@ -1,0 +1,48 @@
+#!/usr/bin/python3 -I
+"""Run one of the policy's allowed commands from inside a service.
+
+  cs-run NAME [KEY=VALUE ...]       e.g. cs-run publish rel_path=runs/42
+
+Only commands listed in the policy's services.commands work here. Exit status
+is the command's.
+"""
+import json
+import os
+import socket
+import sys
+
+
+def main():
+    if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help"):
+        print(__doc__.strip())
+        sys.exit(0 if len(sys.argv) > 1 else 2)
+    params = {}
+    for kv in sys.argv[2:]:
+        if "=" not in kv:
+            sys.exit("cs-run: parameters are KEY=VALUE, got {!r}".format(kv))
+        k, v = kv.split("=", 1)
+        params[k] = v
+    path = os.environ.get("CS_BROKER_SOCKET", "/run/claude-slurm/broker.sock")
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        s.connect(path)
+    except OSError as e:
+        sys.exit("cs-run: cannot reach the broker at {}: {}".format(path, e))
+    s.sendall((json.dumps({"op": "run", "args": {"name": sys.argv[1], "params": params}})
+               + "\n").encode())
+    buf = b""
+    while True:
+        chunk = s.recv(65536)
+        if not chunk:
+            break
+        buf += chunk
+    res = json.loads(buf.decode() or "{}")
+    if not res.get("ok"):
+        sys.exit("cs-run: " + str(res.get("error", "no response")))
+    r = res["result"]
+    sys.stdout.write(r.get("stdout", ""))
+    sys.stderr.write(r.get("stderr", ""))
+    sys.exit(r.get("rc", 1) if 0 <= r.get("rc", 1) < 256 else 1)
+
+
+main()

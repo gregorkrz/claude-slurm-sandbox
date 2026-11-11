@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Per-project setup/check tool. See README.md.
+set -euo pipefail
+PREFIX="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+PY="$PREFIX/venv/bin/python"
+[[ -x "$PY" ]] || PY="$(command -v python3)"
+exec "$PY" -I "$PREFIX/bin/_cli.py" "$@"

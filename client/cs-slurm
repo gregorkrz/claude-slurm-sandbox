@@ -1,0 +1,94 @@
+#!/usr/bin/python3 -I
+"""Talk to the claude-slurm broker from inside a service (no squeue/sbatch here).
+
+  cs-slurm list [--json]
+  cs-slurm info JOBID
+  cs-slurm submit --script S --partition P --minutes M [--cpus N] [--mem-gb N]
+                  [--gpus N] [--name X] [--array SPEC] [--after-ok ID,..]
+                  [--after-any ID,..] [--account A] [--qos Q] [--env K=V ...]
+                  [-- ARGS...]
+  cs-slurm cancel|hold|release JOBID
+
+Only jobs submitted through this project's broker are visible or controllable.
+"""
+import argparse
+import json
+import os
+import socket
+import sys
+
+
+def call(op, args):
+    path = os.environ.get("CS_BROKER_SOCKET", "/run/claude-slurm/broker.sock")
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        s.connect(path)
+    except OSError as e:
+        sys.exit("cs-slurm: cannot reach the broker at {}: {}".format(path, e))
+    s.sendall((json.dumps({"op": op, "args": args}) + "\n").encode())
+    buf = b""
+    while True:
+        chunk = s.recv(65536)
+        if not chunk:
+            break
+        buf += chunk
+    s.close()
+    res = json.loads(buf.decode() or "{}")
+    if not res.get("ok"):
+        sys.exit("cs-slurm: " + str(res.get("error", "no response")))
+    return res["result"]
+
+
+def ids(v):
+    return [x for x in (v or "").split(",") if x]
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="cs-slurm")
+    sub = ap.add_subparsers(dest="cmd")
+    ls = sub.add_parser("list")
+    ls.add_argument("--json", action="store_true")
+    for c in ("info", "cancel", "hold", "release"):
+        sub.add_parser(c).add_argument("job_id")
+    sb = sub.add_parser("submit")
+    sb.add_argument("--script", required=True)
+    sb.add_argument("--partition", required=True)
+    sb.add_argument("--minutes", type=int, required=True)
+    sb.add_argument("--cpus", type=int, default=1)
+    sb.add_argument("--mem-gb", type=int, default=4)
+    sb.add_argument("--gpus", type=int, default=0)
+    sb.add_argument("--name", default="job")
+    sb.add_argument("--array")
+    sb.add_argument("--after-ok")
+    sb.add_argument("--after-any")
+    sb.add_argument("--account")
+    sb.add_argument("--qos")
+    sb.add_argument("--env", action="append", default=[], metavar="K=V")
+    sb.add_argument("args", nargs="*")
+    a = ap.parse_args()
+    if not a.cmd:
+        ap.error("missing command")
+
+    if a.cmd == "list":
+        rows = call("list", {})
+        if a.json:
+            print(json.dumps(rows, indent=2))
+        else:
+            for r in rows:
+                print("\t".join(str(r[k]) for k in ("job_id", "task", "name", "state",
+                                                     "elapsed", "partition", "reason")))
+    elif a.cmd == "submit":
+        env = dict(e.split("=", 1) for e in a.env if "=" in e)
+        res = call("submit", {"script": a.script, "partition": a.partition,
+                              "minutes": a.minutes, "cpus": a.cpus, "mem_gb": a.mem_gb,
+                              "gpus": a.gpus, "name": a.name, "args": a.args, "env": env,
+                              "array": a.array, "after_ok": ids(a.after_ok),
+                              "after_any": ids(a.after_any),
+                              "account": a.account, "qos": a.qos})
+        print(json.dumps(res, indent=2))
+    else:
+        res = call(a.cmd, {"job_id": a.job_id})
+        print(res if isinstance(res, str) else json.dumps(res, indent=2))
+
+
+main()
